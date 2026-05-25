@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.32.0](https://github.com/dograh-hq/dograh/compare/dograh-v1.31.0...dograh-v1.32.0) (2026-05-25)
+
+
+### Features
+
+* add devcontainer based setup  ([#352](https://github.com/dograh-hq/dograh/issues/352)) ([0716582](https://github.com/dograh-hq/dograh/commit/0716582aa7597e2697f72313237c69b2ac0e30db))
+* add google stt and tts. add folders to organize agents ([ad2fa07](https://github.com/dograh-hq/dograh/commit/ad2fa0705882bf6ba48c5ba65cc6bfac90e105cf))
+* add MiniMax provider support (Chat + TTS) ([#309](https://github.com/dograh-hq/dograh/issues/309)) ([0e0d313](https://github.com/dograh-hq/dograh/commit/0e0d3136ca9d2986e76c982a08c957bb62e94a6f))
+* add ultravox realtime and fix signature issue in telephony ([#345](https://github.com/dograh-hq/dograh/issues/345)) ([3892b58](https://github.com/dograh-hq/dograh/commit/3892b584861e4a7bec56f03950fedca5171e6079))
+* add xai grok as realtime model ([9135c2d](https://github.com/dograh-hq/dograh/commit/9135c2da1360e4d93d822375011351f2fa67f729))
+
+
+### Bug Fixes
+
+* fix projection to TS when fetching agnet in MCP ([bbb4f91](https://github.com/dograh-hq/dograh/commit/bbb4f91a2747c5a6b36a6675d6823396d2b44790))
+* fix vobiz webhook signature validation ([285de92](https://github.com/dograh-hq/dograh/commit/285de925282da9f4213bf802844f20c55127cbd8))
+
+
+### Documentation
+
+* fix asterisk protocol in mintlify websocket client config ([a725fda](https://github.com/dograh-hq/dograh/commit/a725fda274d81e3072de9864cb63cc3eed339392))
+
 ## [1.31.0](https://github.com/dograh-hq/dograh/compare/dograh-v1.30.1...dograh-v1.31.0) (2026-05-21)
 
 
