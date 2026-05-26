@@ -94,8 +94,18 @@ def create_generation_started_callback(engine: "PipecatEngine"):
         logger.debug("LLM generation started in callback processor")
         # Clear reference text from previous generation
         engine._current_llm_generation_reference_text = ""
+        engine.mark_node_opening_started()
 
     return handle_generation_started
+
+
+def create_bot_stopped_speaking_callback(engine: "PipecatEngine"):
+    """Return a callback that advances runtime-owned auto transitions."""
+
+    async def handle_bot_stopped_speaking():
+        await engine.handle_bot_stopped_speaking()
+
+    return handle_bot_stopped_speaking
 
 
 def create_aggregation_correction_callback(engine: "PipecatEngine"):

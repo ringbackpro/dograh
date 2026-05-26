@@ -2,6 +2,8 @@ import re
 from collections import Counter
 from typing import Dict, List, Set
 
+from loguru import logger
+
 from api.services.workflow.dto import EdgeDataDTO, NodeType, ReactFlowDTO
 from api.services.workflow.errors import ItemKind, WorkflowError
 from api.services.workflow.node_data import BaseNodeData
@@ -46,9 +48,14 @@ class Edge:
 
         self.label = data.label
         self.condition = data.condition
+        self.transition_mode = data.transition_mode
         self.transition_speech = data.transition_speech
 
         self.data = data
+
+    @property
+    def is_auto_transition(self) -> bool:
+        return self.transition_mode == "auto"
 
     def get_function_name(self):
         return re.sub(r"[^a-z0-9]", "_", self.label.lower())
@@ -114,6 +121,7 @@ class WorkflowGraph:
 
         # Store all edges
         self.edges: List[Edge] = []
+        self.warnings: List[WorkflowError] = []
 
         for e in dto.edges:
             source_node = self.nodes[e.source]
@@ -200,6 +208,7 @@ class WorkflowGraph:
 
         errors.extend(self._assert_start_node())
         errors.extend(self._assert_connection_counts())
+        errors.extend(self._assert_transition_modes())
         errors.extend(self._assert_global_node())
         errors.extend(self._assert_node_configs())
         if errors:
@@ -323,6 +332,61 @@ class WorkflowGraph:
                         field=None,
                         message=f"{label} must have at least {gc.min_outgoing} outgoing edge(s)",
                     )
+                )
+
+        return errors
+
+    def _assert_transition_modes(self):
+        """Validate transition mode combinations.
+
+        Auto transitions are runtime-owned and cannot be ambiguous. Mixing an
+        auto transition with LLM/conditional transitions from the same node is
+        accepted for backward compatibility, but warned because the conditional
+        edges are dead until a later node is reached.
+        """
+        errors: list[WorkflowError] = []
+
+        for node in self.nodes.values():
+            auto_edges = [e for e in node.out_edges if e.transition_mode == "auto"]
+            if not auto_edges:
+                continue
+
+            if node.is_end:
+                errors.append(
+                    WorkflowError(
+                        kind=ItemKind.node,
+                        id=node.id,
+                        field="data.transition_mode",
+                        message="End nodes cannot have auto transition edges",
+                    )
+                )
+
+            if len(auto_edges) > 1:
+                errors.append(
+                    WorkflowError(
+                        kind=ItemKind.node,
+                        id=node.id,
+                        field="data.transition_mode",
+                        message="A node can have at most one auto transition edge",
+                    )
+                )
+
+            conditional_edges = [
+                e for e in node.out_edges if e.transition_mode == "llm"
+            ]
+            if conditional_edges:
+                warning = WorkflowError(
+                    kind=ItemKind.node,
+                    id=node.id,
+                    field="data.transition_mode",
+                    message=(
+                        "Auto transition edge makes conditional LLM edges from "
+                        "the same node unreachable until another node is reached"
+                    ),
+                )
+                self.warnings.append(warning)
+                logger.warning(
+                    f"Workflow warning for node {node.id}: {warning['message']}"
                 )
 
         return errors

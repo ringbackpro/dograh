@@ -1004,6 +1004,7 @@ class RFNodeDTO(_RFNodeBase):
 class EdgeDataDTO(BaseModel):
     label: str = Field(..., min_length=1)
     condition: str = Field(..., min_length=1)
+    transition_mode: Literal["llm", "auto", "timer", "external_event"] = "llm"
     transition_speech: Optional[str] = None
     transition_speech_type: Optional[str] = None  # 'text' or 'audio'
     transition_speech_recording_id: Optional[str] = None

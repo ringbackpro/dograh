@@ -31,6 +31,7 @@ export function parseCode(
     edgeFieldNames: string[] = [
         "label",
         "condition",
+        "transition_mode",
         "transition_speech",
         "transition_speech_type",
         "transition_speech_recording_id",

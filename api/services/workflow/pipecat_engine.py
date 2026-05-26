@@ -1,3 +1,4 @@
+import time
 from typing import TYPE_CHECKING, Awaitable, Callable, Dict, Literal, Optional, Union
 
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
@@ -9,6 +10,7 @@ from pipecat.frames.frames import (
     FunctionCallResultProperties,
     LLMContextFrame,
     TTSSpeakFrame,
+    UserStartedSpeakingFrame,
 )
 from pipecat.pipeline.task import PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
@@ -20,7 +22,7 @@ from api.db import db_client
 from api.enums import ToolCategory
 from api.services.pipecat.audio_playback import play_audio
 from api.services.workflow.disposition_mapper import apply_disposition_mapping
-from api.services.workflow.workflow_graph import Node, WorkflowGraph
+from api.services.workflow.workflow_graph import Edge, Node, WorkflowGraph
 
 if TYPE_CHECKING:
     from pipecat.frames.frames import Frame
@@ -147,6 +149,20 @@ class PipecatEngine:
             None
         )
 
+        # Auto transition state. These flags are explicit because
+        # BotStoppedSpeakingFrame can arrive more than once for a single node.
+        self.skip_edge_armed_for_node_id: Optional[str] = None
+        self.skip_edge_consumed_for_node_id: Optional[str] = None
+        self.suppress_skip_until_node_opening_complete: bool = False
+        self._skip_edge_interrupted_for_node_id: Optional[str] = None
+
+        # Runtime telemetry counters for auto transition behavior.
+        self.skip_edge_triggered_count: int = 0
+        self.skip_edge_failures: int = 0
+        self.duplicate_transition_prevented: int = 0
+        self.skip_edge_latency_ms: int = 0
+        self.skip_edge_interrupt_aborts: int = 0
+
     async def _get_organization_id(self) -> Optional[int]:
         """Get and cache the organization ID from workflow run."""
         if self._organization_id is None:
@@ -215,6 +231,142 @@ class PipecatEngine:
 
         return render_template(prompt, self._call_context_vars)
 
+    def _auto_transition_edge_for_node(self, node: Optional[Node]) -> Optional[Edge]:
+        if not node:
+            return None
+        for edge in node.out_edges:
+            if edge.transition_mode == "auto":
+                return edge
+        return None
+
+    def _sync_skip_edge_telemetry(self) -> None:
+        self._gathered_context["skip_edge_telemetry"] = {
+            "skip_edge_triggered_count": self.skip_edge_triggered_count,
+            "skip_edge_failures": self.skip_edge_failures,
+            "duplicate_transition_prevented": self.duplicate_transition_prevented,
+            "skip_edge_latency_ms": self.skip_edge_latency_ms,
+            "skip_edge_interrupt_aborts": self.skip_edge_interrupt_aborts,
+        }
+
+    def _record_skip_edge_failure(self) -> None:
+        self.skip_edge_failures += 1
+        self._sync_skip_edge_telemetry()
+
+    def mark_node_opening_started(self) -> None:
+        """Arm auto transitions once the node's opening response begins."""
+        edge = self._auto_transition_edge_for_node(self._current_node)
+        if not edge or not self._current_node:
+            return
+        if self.skip_edge_consumed_for_node_id == self._current_node.id:
+            return
+        self.skip_edge_armed_for_node_id = self._current_node.id
+        self.suppress_skip_until_node_opening_complete = False
+
+    def _append_auto_transition_context(self, edge: Edge) -> None:
+        if not self.context:
+            return
+        message = {
+            "role": "system",
+            "content": (
+                "Workflow auto-transition executed after the assistant finished "
+                f"speaking. Source node: {edge.source}. Target node: {edge.target}. "
+                f"Edge label: {edge.label}. Edge condition: {edge.condition}."
+            ),
+        }
+        if hasattr(self.context, "add_message"):
+            self.context.add_message(message)
+            return
+        messages = list(getattr(self.context, "messages", []) or [])
+        messages.append(message)
+        self.context.set_messages(messages)
+
+    async def _play_transition_speech(self, edge: Edge) -> None:
+        speech_type = edge.data.transition_speech_type or "text"
+        if (
+            speech_type == "audio"
+            and edge.data.transition_speech_recording_id
+            and self._fetch_recording_audio
+        ):
+            logger.info(
+                f"Playing transition audio: {edge.data.transition_speech_recording_id}"
+            )
+            self._queued_speech_mute_state = "waiting"
+            result = await self._fetch_recording_audio(
+                recording_pk=int(edge.data.transition_speech_recording_id)
+            )
+            if result:
+                await play_audio(
+                    result.audio,
+                    sample_rate=self._audio_config.pipeline_sample_rate
+                    if self._audio_config
+                    else 16000,
+                    queue_frame=self._transport_output.queue_frame,
+                    transcript=result.transcript,
+                    persist_to_logs=True,
+                )
+            else:
+                logger.warning(
+                    f"Failed to fetch transition audio {edge.data.transition_speech_recording_id}"
+                )
+        elif edge.transition_speech:
+            logger.info(f"Playing transition speech: {edge.transition_speech}")
+            self._queued_speech_mute_state = "waiting"
+            await self.task.queue_frame(
+                TTSSpeakFrame(
+                    edge.transition_speech,
+                    append_to_context=False,
+                    persist_to_logs=True,
+                )
+            )
+
+    async def _transition_via_edge(
+        self,
+        edge: Edge,
+        *,
+        function_call_params: Optional[FunctionCallParams] = None,
+    ) -> None:
+        previous_node_id = self._current_node.id if self._current_node else None
+
+        await self._perform_variable_extraction_if_needed(self._current_node)
+        await self._play_transition_speech(edge)
+
+        if function_call_params is None:
+            self._append_auto_transition_context(edge)
+
+        await self.set_node(edge.target)
+
+        if function_call_params is None:
+            if self._current_node and self._current_node.is_end:
+                await self.end_call_with_reason(EndTaskReason.USER_QUALIFIED.value)
+            else:
+                await self.queue_node_opening(
+                    node_id=edge.target,
+                    previous_node_id=previous_node_id,
+                    generate_if_no_greeting=True,
+                )
+            return
+
+        async def on_context_updated() -> None:
+            """
+            pipecat framework will run this function after the function call result has been updated in the context.
+            This way, when we do set_node from within this function, and go for LLM completion with updated
+            system prompts, the context is updated with function call result.
+            """
+            # FIXME: There is a potential race condition, when we generate LLM Completion from UserContextAggregator
+            # with FunctionCallResultFrame and we call end_call_with_reason where we queue EndFrame or CancelFrame.
+            # If EndFrame reaches the LLM Processor before the ContextFrame, we might never run generation which
+            # might be intended
+
+            # Queue EndFrame if we just transitioned to EndNode
+            if self._current_node.is_end:
+                await self.end_call_with_reason(EndTaskReason.USER_QUALIFIED.value)
+
+        properties = FunctionCallResultProperties(on_context_updated=on_context_updated)
+        await function_call_params.result_callback(
+            {"status": "done"},
+            properties=properties,
+        )
+
     async def _create_transition_func(
         self,
         name: str,
@@ -223,6 +375,23 @@ class PipecatEngine:
         transition_speech_type: Optional[str] = None,
         transition_speech_recording_id: Optional[str] = None,
     ):
+        edge = Edge(
+            source=self._current_node.id if self._current_node else "",
+            target=transition_to_node,
+            data=type(
+                "TransitionEdgeData",
+                (),
+                {
+                    "label": name,
+                    "condition": name,
+                    "transition_mode": "llm",
+                    "transition_speech": transition_speech,
+                    "transition_speech_type": transition_speech_type,
+                    "transition_speech_recording_id": transition_speech_recording_id,
+                },
+            )(),
+        )
+
         async def transition_func(function_call_params: FunctionCallParams) -> None:
             """Inner function that handles the node change tool calls"""
             logger.info(f"LLM Function Call EXECUTED: {name}")
@@ -232,81 +401,9 @@ class PipecatEngine:
             logger.info(f"Arguments: {function_call_params.arguments}")
 
             try:
-                # Perform variable extraction before transitioning to new node
-                await self._perform_variable_extraction_if_needed(self._current_node)
-
-                # Queue transition speech/audio before switching nodes
-                speech_type = transition_speech_type or "text"
-                if (
-                    speech_type == "audio"
-                    and transition_speech_recording_id
-                    and self._fetch_recording_audio
-                ):
-                    logger.info(
-                        f"Playing transition audio: {transition_speech_recording_id}"
-                    )
-                    self._queued_speech_mute_state = "waiting"
-                    result = await self._fetch_recording_audio(
-                        recording_pk=int(transition_speech_recording_id)
-                    )
-                    if result:
-                        await play_audio(
-                            result.audio,
-                            sample_rate=self._audio_config.pipeline_sample_rate
-                            if self._audio_config
-                            else 16000,
-                            queue_frame=self._transport_output.queue_frame,
-                            transcript=result.transcript,
-                            persist_to_logs=True,
-                        )
-                    else:
-                        logger.warning(
-                            f"Failed to fetch transition audio {transition_speech_recording_id}"
-                        )
-                elif transition_speech:
-                    logger.info(f"Playing transition speech: {transition_speech}")
-                    self._queued_speech_mute_state = "waiting"
-                    await self.task.queue_frame(
-                        TTSSpeakFrame(
-                            transition_speech,
-                            append_to_context=False,
-                            persist_to_logs=True,
-                        )
-                    )
-
-                # Set context for the new node, so that when the function call result
-                # frame is received by LLMContextAggregator and an LLM generation
-                # is done, we have updated context and functions
-                await self.set_node(transition_to_node)
-
-                async def on_context_updated() -> None:
-                    """
-                    pipecat framework will run this function after the function call result has been updated in the context.
-                    This way, when we do set_node from within this function, and go for LLM completion with updated
-                    system prompts, the context is updated with function call result.
-                    """
-                    # FIXME: There is a potential race condition, when we generate LLM Completion from UserContextAggregator
-                    # with FunctionCallResultFrame and we call end_call_with_reason where we queue EndFrame or CancelFrame.
-                    # If EndFrame reaches the LLM Processor before the ContextFrame, we might never run generation which
-                    # might be intended
-
-                    # Queue EndFrame if we just transitioned to EndNode
-                    if self._current_node.is_end:
-                        await self.end_call_with_reason(
-                            EndTaskReason.USER_QUALIFIED.value
-                        )
-
-                result = {"status": "done"}
-
-                properties = FunctionCallResultProperties(
-                    on_context_updated=on_context_updated,
-                )
-
-                # Call results callback from the pipecat framework
-                # so that a new llm generation can be triggred if
-                # required
-                await function_call_params.result_callback(
-                    result, properties=properties
+                await self._transition_via_edge(
+                    edge,
+                    function_call_params=function_call_params,
                 )
 
             except Exception as e:
@@ -502,6 +599,8 @@ class PipecatEngine:
         # Register transition functions if not an end node
         if not node.is_end:
             for outgoing_edge in node.out_edges:
+                if outgoing_edge.transition_mode != "llm":
+                    continue
                 await self._register_transition_function_with_llm(
                     outgoing_edge.get_function_name(),
                     outgoing_edge.target,
@@ -550,6 +649,15 @@ class PipecatEngine:
 
         # Set current node for all nodes (including static ones) so STT mute filter works
         self._current_node = node
+        if previous_node_id != node_id:
+            self._skip_edge_interrupted_for_node_id = None
+            if self._auto_transition_edge_for_node(node):
+                self.skip_edge_armed_for_node_id = None
+                self.skip_edge_consumed_for_node_id = None
+                self.suppress_skip_until_node_opening_complete = True
+            else:
+                self.skip_edge_armed_for_node_id = None
+                self.suppress_skip_until_node_opening_complete = False
 
         # Track visited nodes in gathered context for call tags
         nodes_visited = self._gathered_context.setdefault("nodes_visited", [])
@@ -667,6 +775,7 @@ class PipecatEngine:
                             transcript=result.transcript,
                             append_to_context=True,
                         )
+                        self.mark_node_opening_started()
                         return "greeting"
                     logger.warning(
                         f"Failed to fetch audio greeting {greeting_value}, "
@@ -680,6 +789,7 @@ class PipecatEngine:
                     await self.task.queue_frame(
                         TTSSpeakFrame(greeting_value, append_to_context=True)
                     )
+                    self.mark_node_opening_started()
                     return "greeting"
 
         if (
@@ -691,6 +801,7 @@ class PipecatEngine:
             # Queue after the voicemail detector in the live pipeline so the
             # detector can gate initial generations when needed.
             await self.llm.queue_frame(LLMContextFrame(self.context))
+            self.mark_node_opening_started()
             return "llm"
 
         return "none"
@@ -789,6 +900,20 @@ class PipecatEngine:
             self._bot_is_speaking = True
             if self._queued_speech_mute_state == "waiting":
                 self._queued_speech_mute_state = "playing"
+        elif isinstance(frame, UserStartedSpeakingFrame):
+            if (
+                self._bot_is_speaking
+                and self._current_node
+                and self.skip_edge_armed_for_node_id == self._current_node.id
+                and self.skip_edge_consumed_for_node_id != self._current_node.id
+            ):
+                self._skip_edge_interrupted_for_node_id = self._current_node.id
+                self.skip_edge_consumed_for_node_id = self._current_node.id
+                self.skip_edge_interrupt_aborts += 1
+                self._sync_skip_edge_telemetry()
+                logger.info(
+                    f"Auto transition aborted because user interrupted node {self._current_node.id}"
+                )
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_is_speaking = False
             self._queued_speech_mute_state = "idle"
@@ -808,6 +933,42 @@ class PipecatEngine:
                 return True
 
         return False
+
+    async def handle_bot_stopped_speaking(self) -> None:
+        """Auto-advance runtime-owned transitions after full bot speech."""
+        node = self._current_node
+        edge = self._auto_transition_edge_for_node(node)
+        if not node or not edge or self._call_disposed:
+            return
+
+        if self.skip_edge_consumed_for_node_id == node.id:
+            self.duplicate_transition_prevented += 1
+            self._sync_skip_edge_telemetry()
+            logger.debug(f"Duplicate auto transition prevented for node {node.id}")
+            return
+
+        if self.suppress_skip_until_node_opening_complete:
+            return
+
+        if self.skip_edge_armed_for_node_id != node.id:
+            return
+
+        if self._skip_edge_interrupted_for_node_id == node.id:
+            self.skip_edge_consumed_for_node_id = node.id
+            return
+
+        self.skip_edge_consumed_for_node_id = node.id
+        started = time.monotonic()
+        try:
+            await self._transition_via_edge(edge)
+            self.skip_edge_triggered_count += 1
+        except Exception as e:
+            self._record_skip_edge_failure()
+            logger.error(f"Auto transition failed for node {node.id}: {e}")
+            raise
+        finally:
+            self.skip_edge_latency_ms = int((time.monotonic() - started) * 1000)
+            self._sync_skip_edge_telemetry()
 
     def create_user_idle_handler(self):
         """
@@ -829,6 +990,10 @@ class PipecatEngine:
         This is used to reset the flags that control the flow of the engine.
         """
         return engine_callbacks.create_generation_started_callback(self)
+
+    def create_bot_stopped_speaking_callback(self):
+        """Return callback used by PipelineEngineCallbacksProcessor."""
+        return engine_callbacks.create_bot_stopped_speaking_callback(self)
 
     def create_aggregation_correction_callback(self) -> Callable[[str], str]:
         """Create a callback that corrects corrupted aggregation using reference text."""

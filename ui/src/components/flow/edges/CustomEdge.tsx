@@ -28,6 +28,7 @@ const EdgeDetailsDialog = ({ open, onOpenChange, data, onSave }: EdgeDetailsDial
     const { recordings } = useWorkflow();
     const [condition, setCondition] = useState(data?.condition ?? '');
     const [label, setLabel] = useState(data?.label ?? '');
+    const [transitionMode, setTransitionMode] = useState<FlowEdgeData['transition_mode']>(data?.transition_mode ?? 'llm');
     const [transitionSpeech, setTransitionSpeech] = useState(data?.transition_speech ?? '');
     const [transitionSpeechType, setTransitionSpeechType] = useState<'text' | 'audio'>(data?.transition_speech_type ?? 'text');
     const [transitionSpeechRecordingId, setTransitionSpeechRecordingId] = useState(data?.transition_speech_recording_id ?? '');
@@ -37,6 +38,7 @@ const EdgeDetailsDialog = ({ open, onOpenChange, data, onSave }: EdgeDetailsDial
         if (open) {
             setCondition(data?.condition ?? '');
             setLabel(data?.label ?? '');
+            setTransitionMode(data?.transition_mode ?? 'llm');
             setTransitionSpeech(data?.transition_speech ?? '');
             setTransitionSpeechType(data?.transition_speech_type ?? 'text');
             setTransitionSpeechRecordingId(data?.transition_speech_recording_id ?? '');
@@ -47,12 +49,13 @@ const EdgeDetailsDialog = ({ open, onOpenChange, data, onSave }: EdgeDetailsDial
         onSave({
             condition,
             label,
+            transition_mode: transitionMode,
             transition_speech: transitionSpeechType === 'text' ? (transitionSpeech || undefined) : undefined,
             transition_speech_type: transitionSpeechType,
             transition_speech_recording_id: transitionSpeechType === 'audio' ? (transitionSpeechRecordingId || undefined) : undefined,
         });
         onOpenChange(false);
-    }, [condition, label, transitionSpeech, transitionSpeechType, transitionSpeechRecordingId, onSave, onOpenChange]);
+    }, [condition, label, transitionMode, transitionSpeech, transitionSpeechType, transitionSpeechRecordingId, onSave, onOpenChange]);
 
     // Handle Cmd+S / Ctrl+S keyboard shortcut to save
     useEffect(() => {
@@ -107,6 +110,19 @@ const EdgeDetailsDialog = ({ open, onOpenChange, data, onSave }: EdgeDetailsDial
                             value={condition}
                             onChange={(e) => setCondition(e.target.value)}
                         />
+                    </div>
+                    <div className="grid gap-2">
+                        <Label>Transition Mode</Label>
+                        <select
+                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            value={transitionMode}
+                            onChange={(e) => setTransitionMode(e.target.value as FlowEdgeData['transition_mode'])}
+                        >
+                            <option value="llm">LLM</option>
+                            <option value="auto">Auto</option>
+                            <option value="timer">Timer</option>
+                            <option value="external_event">External Event</option>
+                        </select>
                     </div>
                     <div className="grid gap-2">
                         <Label>Transition Speech</Label>

@@ -128,6 +128,7 @@ class Workflow:
         *,
         label: str,
         condition: str,
+        transition_mode: str | None = None,
         transition_speech: str | None = None,
         transition_speech_type: str | None = None,
         transition_speech_recording_id: str | None = None,
@@ -148,6 +149,8 @@ class Workflow:
             raise ValidationError("edge.condition is required")
 
         data: dict[str, Any] = {"label": label, "condition": condition}
+        if transition_mode is not None:
+            data["transition_mode"] = transition_mode
         if transition_speech is not None:
             data["transition_speech"] = transition_speech
         if transition_speech_type is not None:

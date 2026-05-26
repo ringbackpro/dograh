@@ -4,6 +4,7 @@ from typing import Awaitable, Callable, Optional
 from loguru import logger
 
 from pipecat.frames.frames import (
+    BotStoppedSpeakingFrame,
     Frame,
     HeartbeatFrame,
     LLMFullResponseStartFrame,
@@ -27,6 +28,7 @@ class PipelineEngineCallbacksProcessor(FrameProcessor):
         max_duration_end_task_callback: Optional[Callable[[], Awaitable[None]]] = None,
         generation_started_callback: Optional[Callable[[], Awaitable[None]]] = None,
         llm_text_frame_callback: Optional[Callable[[str], Awaitable[None]]] = None,
+        bot_stopped_speaking_callback: Optional[Callable[[], Awaitable[None]]] = None,
     ):
         super().__init__()
         self._start_time = None
@@ -34,6 +36,7 @@ class PipelineEngineCallbacksProcessor(FrameProcessor):
         self._max_duration_end_task_callback = max_duration_end_task_callback
         self._generation_started_callback = generation_started_callback
         self._llm_text_frame_callback = llm_text_frame_callback
+        self._bot_stopped_speaking_callback = bot_stopped_speaking_callback
         self._end_task_frame_pushed = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -45,6 +48,8 @@ class PipelineEngineCallbacksProcessor(FrameProcessor):
             await self._check_call_duration()
         elif isinstance(frame, LLMFullResponseStartFrame):
             await self._generation_started()
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            await self._bot_stopped_speaking()
         elif (
             isinstance(frame, (LLMTextFrame, TTSSpeakFrame))
             and self._llm_text_frame_callback
@@ -73,3 +78,7 @@ class PipelineEngineCallbacksProcessor(FrameProcessor):
     async def _generation_started(self):
         if self._generation_started_callback:
             await self._generation_started_callback()
+
+    async def _bot_stopped_speaking(self):
+        if self._bot_stopped_speaking_callback:
+            await self._bot_stopped_speaking_callback()

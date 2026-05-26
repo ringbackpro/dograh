@@ -124,6 +124,8 @@ async def compose_functions_for_node(
 
     # Transition function schemas
     for outgoing_edge in node.out_edges:
+        if outgoing_edge.transition_mode != "llm":
+            continue
         function_schema = get_function_schema(
             outgoing_edge.get_function_name(), outgoing_edge.condition
         )

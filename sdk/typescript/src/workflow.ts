@@ -35,6 +35,7 @@ export interface AddNodeOptions {
 export interface EdgeOptions {
     label: string;
     condition: string;
+    transitionMode?: "llm" | "auto" | "timer" | "external_event";
     transitionSpeech?: string;
     transitionSpeechType?: "text" | "audio";
     transitionSpeechRecordingId?: string;
@@ -122,6 +123,9 @@ export class Workflow {
         };
         if (opts.transitionSpeech !== undefined) {
             data.transition_speech = opts.transitionSpeech;
+        }
+        if (opts.transitionMode !== undefined) {
+            data.transition_mode = opts.transitionMode;
         }
         if (opts.transitionSpeechType !== undefined) {
             data.transition_speech_type = opts.transitionSpeechType;
