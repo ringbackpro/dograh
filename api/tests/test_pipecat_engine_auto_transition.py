@@ -131,7 +131,8 @@ async def test_auto_transition_advances_after_greeting_without_user_input():
                 label="Continue",
                 condition="After greeting",
                 transition_mode="auto",
-            )
+            ),
+            _edge("agent-end", "agent", "end", label="End Call", condition="When done"),
         ]
     )
     engine, llm, _task = _engine(workflow)
@@ -215,16 +216,13 @@ def test_multiple_auto_edges_from_one_node_are_rejected():
 
 @pytest.mark.asyncio
 async def test_default_llm_transition_behavior_is_unchanged():
-    workflow = _workflow(
-        [
-            _edge(
-                "start-end",
-                "start",
-                "end",
-                label="End Call",
-                condition="When the user asks to end",
-            )
-        ]
+    workflow = WorkflowGraph(
+        ReactFlowDTO(
+            nodes=[_start_node(), _end_node()],
+            edges=[
+                _edge("start-end", "start", "end", label="End Call", condition="When the user asks to end"),
+            ],
+        )
     )
     engine, llm, _task = _engine(workflow)
     start = workflow.nodes["start"]
@@ -251,7 +249,8 @@ async def test_duplicate_bot_stopped_frame_does_not_repeat_auto_transition():
                 label="Continue",
                 condition="After greeting",
                 transition_mode="auto",
-            )
+            ),
+            _edge("agent-end", "agent", "end", label="End Call", condition="When done"),
         ]
     )
     engine, _llm, _task = _engine(workflow)
@@ -278,7 +277,8 @@ async def test_user_interruption_aborts_auto_transition():
                 label="Continue",
                 condition="After greeting",
                 transition_mode="auto",
-            )
+            ),
+            _edge("agent-end", "agent", "end", label="End Call", condition="When done"),
         ]
     )
     engine, _llm, _task = _engine(workflow)
@@ -305,7 +305,8 @@ async def test_suppression_blocks_auto_transition_until_opening_is_armed():
                 label="Continue",
                 condition="After greeting",
                 transition_mode="auto",
-            )
+            ),
+            _edge("agent-end", "agent", "end", label="End Call", condition="When done"),
         ]
     )
     engine, _llm, _task = _engine(workflow)
