@@ -1,0 +1,9 @@
+# Generated at runtime -- never commit budget data or databases.
+inbox/
+faulty/
+curated/
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
+*.pyc

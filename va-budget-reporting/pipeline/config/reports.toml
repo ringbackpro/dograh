@@ -1,0 +1,291 @@
+
+# Report catalogue.
+#
+# One [[report]] block per recurring extract that lands in the inbox. These five
+# are modelled on the shapes VA budget reports actually arrive in, and they are
+# wired to the synthetic sample generator so the pipeline runs end to end with
+# no VA data present. Replace the column offsets with the real ones measured off
+# your own files -- that is the main onboarding task for each report.
+#
+# Fixed-width columns use `start` (1-based, count it off the printed report) and
+# `length`. Delimited columns use `source` (the header text) or `index`.
+#
+# Amount columns are stored as integer cents and must be named `*_cents`.
+
+# ---------------------------------------------------------------------------
+# IFCAP / VistA -- Status of Funds by Control Point.
+# A captured roll-and-scroll screen: page headers, rule lines, a printed total.
+# ---------------------------------------------------------------------------
+[[report]]
+code = "SOF"
+name = "Status of Funds by Control Point"
+source_system = "IFCAP"
+format = "fixed"
+filename_glob = "SOF_*.txt"
+as_of_from = "filename"
+as_of_pattern = 'SOF_(\d{8})\.txt'
+as_of_format = "%Y%m%d"
+grain = ["fcp"]
+expected_cadence_days = 4          # daily, with slack for weekends and holidays
+row_pattern = '^\d{4}\s'           # data lines begin with a 4-digit control point
+
+  [report.control_total]
+  pattern = 'TOTAL OBLIGATIONS:\s+([\d,]+\.\d{2})'
+  column = "obligations_cents"
+
+  [[report.column]]
+  name = "fcp"
+  start = 1
+  length = 8
+
+  [[report.column]]
+  name = "fcp_name"
+  start = 10
+  length = 30
+
+  [[report.column]]
+  name = "allocation_cents"
+  type = "amount"
+  start = 40
+  length = 15
+
+  [[report.column]]
+  name = "commitments_cents"
+  type = "amount"
+  start = 55
+  length = 14
+
+  [[report.column]]
+  name = "obligations_cents"
+  type = "amount"
+  start = 69
+  length = 13
+
+  [[report.column]]
+  name = "expenditures_cents"
+  type = "amount"
+  start = 82
+  length = 13
+
+  [[report.column]]
+  name = "balance_cents"
+  type = "amount"
+  start = 95
+  length = 14
+
+
+# ---------------------------------------------------------------------------
+# IFCAP / VistA -- Control Point Activity, fiscal-year-to-date transactions.
+# Delivered as a delimited export (today, whatever the Reflection macro writes).
+# ---------------------------------------------------------------------------
+[[report]]
+code = "CPA"
+name = "Control Point Activity (FYTD transactions)"
+source_system = "IFCAP"
+format = "delimited"
+filename_glob = "CPA_*.csv"
+as_of_from = "filename"
+as_of_pattern = 'CPA_(\d{8})\.csv'
+as_of_format = "%Y%m%d"
+grain = ["doc_number"]
+expected_cadence_days = 4
+
+  [[report.column]]
+  name = "txn_date"
+  type = "date"
+  source = "Transaction Date"
+
+  [[report.column]]
+  name = "doc_number"
+  source = "Document Number"
+
+  [[report.column]]
+  name = "doc_type"
+  source = "Type"
+
+  [[report.column]]
+  name = "fcp"
+  source = "Control Point"
+
+  [[report.column]]
+  name = "boc"
+  source = "BOC"
+
+  [[report.column]]
+  name = "vendor_name"
+  source = "Vendor"
+
+  [[report.column]]
+  name = "description"
+  source = "Description"
+
+  [[report.column]]
+  name = "amount_cents"
+  type = "amount"
+  source = "Amount"
+
+  [[report.column]]
+  name = "status"
+  source = "Status"
+
+
+# ---------------------------------------------------------------------------
+# IFCAP / VistA -- 1358 obligation balances.
+# ---------------------------------------------------------------------------
+[[report]]
+code = "OBL1358"
+name = "1358 Obligation Balances"
+source_system = "IFCAP"
+format = "fixed"
+filename_glob = "OBL1358_*.txt"
+as_of_from = "filename"
+as_of_pattern = 'OBL1358_(\d{8})\.txt'
+as_of_format = "%Y%m%d"
+grain = ["obligation_number"]
+expected_cadence_days = 4
+row_pattern = '^\d{3}-C\d'
+
+  [[report.column]]
+  name = "obligation_number"
+  start = 1
+  length = 14
+
+  [[report.column]]
+  name = "fcp"
+  start = 15
+  length = 7
+
+  [[report.column]]
+  name = "description"
+  start = 22
+  length = 32
+
+  [[report.column]]
+  name = "authorized_cents"
+  type = "amount"
+  start = 54
+  length = 14
+
+  [[report.column]]
+  name = "obligated_cents"
+  type = "amount"
+  start = 68
+  length = 14
+
+  [[report.column]]
+  name = "liquidated_cents"
+  type = "amount"
+  start = 82
+  length = 14
+
+  [[report.column]]
+  name = "remaining_cents"
+  type = "amount"
+  start = 96
+  length = 15
+
+
+# ---------------------------------------------------------------------------
+# IPPS -- invoice status and payment history.
+# ---------------------------------------------------------------------------
+[[report]]
+code = "IPPS"
+name = "Invoice Payment Status"
+source_system = "IPPS"
+format = "delimited"
+filename_glob = "IPPS_*.csv"
+as_of_from = "filename"
+as_of_pattern = 'IPPS_(\d{8})\.csv'
+as_of_format = "%Y%m%d"
+grain = ["invoice_number"]
+expected_cadence_days = 4
+
+  [[report.column]]
+  name = "invoice_number"
+  source = "Invoice Number"
+
+  [[report.column]]
+  name = "po_number"
+  source = "PO Number"
+
+  [[report.column]]
+  name = "vendor_name"
+  source = "Vendor"
+
+  [[report.column]]
+  name = "invoice_date"
+  type = "date"
+  source = "Invoice Date"
+
+  [[report.column]]
+  name = "received_date"
+  type = "date"
+  source = "Received Date"
+
+  [[report.column]]
+  name = "certified_date"
+  type = "date"
+  source = "Certified Date"
+
+  [[report.column]]
+  name = "paid_date"
+  type = "date"
+  source = "Paid Date"
+
+  [[report.column]]
+  name = "amount_cents"
+  type = "amount"
+  source = "Amount"
+
+  [[report.column]]
+  name = "status"
+  source = "Status"
+
+
+# ---------------------------------------------------------------------------
+# FMS (and, after cutover, iFAMS) -- general ledger actuals by accounting period.
+# The authoritative side of every reconciliation.
+# ---------------------------------------------------------------------------
+[[report]]
+code = "FMSACT"
+name = "General Ledger Actuals by Period"
+source_system = "FMS"
+format = "delimited"
+filename_glob = "FMSACT_*.csv"
+as_of_from = "filename"
+as_of_pattern = 'FMSACT_(\d{8})\.csv'
+as_of_format = "%Y%m%d"
+grain = ["fiscal_year", "accounting_period", "fund", "cost_center", "boc"]
+expected_cadence_days = 10         # monthly close, refreshed through the month
+
+  [[report.column]]
+  name = "fiscal_year"
+  type = "integer"
+  source = "Fiscal Year"
+
+  [[report.column]]
+  name = "accounting_period"
+  type = "integer"
+  source = "Accounting Period"
+
+  [[report.column]]
+  name = "fund"
+  source = "Fund"
+
+  [[report.column]]
+  name = "cost_center"
+  source = "Cost Center"
+
+  [[report.column]]
+  name = "boc"
+  source = "BOC"
+
+  [[report.column]]
+  name = "obligations_cents"
+  type = "amount"
+  source = "Obligations"
+
+  [[report.column]]
+  name = "expenditures_cents"
+  type = "amount"
+  source = "Expenditures"
