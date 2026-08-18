@@ -16,6 +16,10 @@ updated, locally-managed budget reporting system feeding Power BI dashboards.
 | [`discovery/open-questions.md`](discovery/open-questions.md) | What still needs answering on the VA intranet, who to ask, and what changes based on each answer |
 | [`pipeline/`](pipeline/) | Working, tested reference implementation — reports in, one database out, Power BI-ready |
 | [`pipeline/powerbi/CONNECTING.md`](pipeline/powerbi/CONNECTING.md) | Model setup, fiscal-year DAX, dashboard structure, refresh |
+| [`HANDOFF.md`](HANDOFF.md) | **Everything above in one self-contained file**, plus instructions for a receiving account and full source. For moving this work elsewhere — no repo access needed |
+
+`HANDOFF.md` is generated. After editing anything here, regenerate it with
+`python3 handoff/build.py` so the export cannot drift from what it describes.
 
 ## The finding in brief
 
