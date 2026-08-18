@@ -1,0 +1,175 @@
+
+# Data-quality rules.
+#
+# Each check is a query that selects violations, plus the severity of finding
+# any. `expect = "zero_rows"` is the default and means "this query should come
+# back empty". The point of keeping them here rather than in code is that the
+# whole rulebook can be read, reviewed and extended by anyone who knows the
+# budget domain and a little SQL.
+#
+# Severity drives the exit code: `error` fails the run, `warn` and `info` do not.
+
+# --- Did the load itself work? -------------------------------------------
+
+[[check]]
+name = "something_loaded"
+severity = "error"
+expect = "nonzero_rows"
+message = "The most recent run loaded no files at all."
+sql = """
+SELECT f.file_id
+FROM ingest_file f
+WHERE f.run_id = (SELECT MAX(run_id) FROM ingest_run)
+  AND f.status = 'loaded'
+"""
+
+[[check]]
+name = "no_failed_files"
+severity = "error"
+message = "One or more files could not be parsed."
+sql = """
+SELECT filename, report_code, message
+FROM ingest_file
+WHERE run_id = (SELECT MAX(run_id) FROM ingest_run)
+  AND status = 'failed'
+"""
+
+# The single most valuable check in the whole set. A screen-scraped report that
+# stops early looks completely normal -- correct format, plausible numbers, just
+# fewer rows. Comparing against the total the report printed on itself is the
+# only cheap way to notice.
+[[check]]
+name = "control_total_match"
+severity = "error"
+message = "A report's printed total disagrees with the rows parsed from it, which usually means a truncated capture."
+sql = """
+SELECT filename,
+       report_code,
+       as_of_date,
+       control_total_cents / 100.0 AS printed_total,
+       parsed_total_cents  / 100.0 AS parsed_total
+FROM ingest_file
+WHERE status = 'loaded'
+  AND control_total_cents IS NOT NULL
+  AND control_total_cents <> parsed_total_cents
+"""
+
+[[check]]
+name = "report_freshness"
+severity = "error"
+message = "A report has not arrived within its expected cadence, so the dashboard would be showing stale figures as though they were current."
+sql = """
+SELECT report_code, latest_as_of, days_stale, freshness_status
+FROM v_report_freshness
+WHERE freshness_status <> 'current'
+"""
+
+# Enumerate the weekdays that should have a snapshot and find the ones that do
+# not, rather than measuring the gap between consecutive snapshots. A single
+# missing Tuesday only widens the gap from one day to two, which no threshold on
+# consecutive dates can distinguish from a normal weekend -- and a quietly
+# missing day is the whole failure this rule exists to catch.
+#
+# Federal holidays will show up here. Either accept them as known warnings or
+# add a holiday table and exclude it in the NOT EXISTS below.
+[[check]]
+name = "snapshot_gaps"
+severity = "warn"
+message = "Status of Funds snapshots are missing for business days inside the loaded window, so trend lines interpolate across a hole."
+sql = """
+SELECT d.date_key AS missing_business_day
+FROM dim_date d
+WHERE d.date_key BETWEEN (SELECT MIN(as_of_date) FROM fact_fcp_daily_balance)
+                     AND (SELECT MAX(as_of_date) FROM fact_fcp_daily_balance)
+  AND CAST(strftime('%w', d.date_key) AS INTEGER) BETWEEN 1 AND 5
+  AND NOT EXISTS (
+      SELECT 1 FROM fact_fcp_daily_balance f WHERE f.as_of_date = d.date_key
+  )
+"""
+
+# --- Does the arithmetic hold? -------------------------------------------
+
+# Verify this identity against a real Status of Funds report before trusting it.
+# Whether expenditures sit inside obligations or beside them varies by report,
+# and getting it wrong silently shifts every balance.
+[[check]]
+name = "sof_balance_identity"
+severity = "error"
+message = "Status of Funds rows where allocation - commitments - obligations does not equal the printed balance."
+sql = """
+SELECT as_of_date,
+       fcp,
+       (allocation_cents - commitments_cents - obligations_cents) / 100.0 AS computed,
+       balance_cents / 100.0 AS reported
+FROM fact_fcp_daily_balance
+WHERE allocation_cents - commitments_cents - obligations_cents <> balance_cents
+"""
+
+[[check]]
+name = "expenditures_within_obligations"
+severity = "warn"
+message = "Expenditures exceed obligations on a control point, which normally indicates a mapping error rather than a real overspend."
+sql = """
+SELECT as_of_date, fcp,
+       expenditures_cents / 100.0 AS expenditures,
+       obligations_cents  / 100.0 AS obligations
+FROM fact_fcp_daily_balance
+WHERE expenditures_cents > obligations_cents
+"""
+
+[[check]]
+name = "negative_balance"
+severity = "warn"
+message = "A control point shows a negative available balance."
+sql = """
+SELECT as_of_date, fcp, balance_cents / 100.0 AS balance
+FROM fact_fcp_daily_balance
+WHERE balance_cents < 0
+"""
+
+# --- Do the sources agree with each other? --------------------------------
+
+[[check]]
+name = "cpa_orphan_control_point"
+severity = "warn"
+message = "Transactions reference a control point that never appears on a Status of Funds report."
+sql = """
+SELECT DISTINCT t.fcp
+FROM fact_cp_transaction t
+LEFT JOIN fact_fcp_daily_balance b ON b.fcp = t.fcp
+WHERE b.fcp IS NULL
+"""
+
+[[check]]
+name = "ifcap_fms_variance"
+severity = "warn"
+message = "IFCAP obligations and FMS actuals differ by more than one percent for an accounting period."
+sql = """
+SELECT fiscal_year, fiscal_period, ifcap_obligations, fms_obligations, variance_pct
+FROM v_ifcap_vs_fms_monthly
+WHERE variance_pct IS NOT NULL
+  AND ABS(variance_pct) > 1.0
+"""
+
+[[check]]
+name = "invoice_paid_before_invoiced"
+severity = "warn"
+message = "An invoice has a payment date earlier than its invoice date."
+sql = """
+SELECT invoice_number, invoice_date, paid_date
+FROM fact_invoice
+WHERE paid_date IS NOT NULL
+  AND julianday(paid_date) < julianday(invoice_date)
+"""
+
+[[check]]
+name = "duplicate_control_point_in_snapshot"
+severity = "error"
+message = "The same control point appears more than once in a single Status of Funds snapshot."
+sql = """
+SELECT s.as_of_date, s.fcp, COUNT(*) AS occurrences
+FROM stg_sof s
+JOIN v_current_file c ON c.file_id = s.file_id
+GROUP BY s.as_of_date, s.fcp
+HAVING COUNT(*) > 1
+"""
